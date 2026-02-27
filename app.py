@@ -1,82 +1,124 @@
-"""
-Techstax Assignment Solution - Flask + MongoDB GitHub Events Dashboard
-Requirements: per_page=100, 30s refresh, no duplicates, webhook receiver
-"""
 from flask import Flask, render_template, request, jsonify
-from pymongo import MongoClient
-from datetime import datetime, timedelta
 import requests
+from datetime import datetime, timedelta
 import os
-from bson import ObjectId
+import threading
+import time
 
 app = Flask(__name__)
 
-# MongoDB Connection (FREE Atlas or local)
-mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-client = MongoClient(mongo_uri)
-db = client['github_events']
-events_collection = db['events']
+# In-memory storage (WORKS EVERYWHERE)
+events_store = []
+store_lock = threading.Lock()
+
+def format_time(iso_string):
+    """Convert GitHub ISO time to readable format"""
+    try:
+        dt = datetime.fromisoformat(iso_string.replace('Z', '+00:00'))
+        return dt.strftime('%Y-%m-%d %H:%M:%S IST')
+    except:
+        return iso_string
 
 @app.route('/')
 def dashboard():
-    """Main dashboard - shows last 24hr events from MongoDB"""
+    """Main dashboard - shows recent events"""
     cutoff = datetime.utcnow() - timedelta(hours=24)
-    events = list(events_collection.find({
-        "created_at": {"$gte": cutoff}
-    }).sort("created_at", -1).limit(100))
     
-    return render_template('index.html', events=events)
+    with store_lock:
+        recent_events = [e for e in events_store 
+                        if 'created_at' in e and 
+                        datetime.fromisoformat(e['created_at'].replace('Z', '+00:00')) > cutoff]
+    
+    return render_template('index.html', events=recent_events)
 
 @app.route('/api/events')
-def fetch_github_events():
-    """Fetch GitHub repo events (per_page=100) + store in MongoDB"""
+def fetch_events():
+    """GitHub API → Store → Return (per_page=100)"""
     repo = request.args.get('repo', 'torvalds/linux')
     
-    # GitHub API call - EXACTLY as required
-    url = f"https://api.github.com/repos/{repo}/events?per_page=100"
-    response = requests.get(url)
-    events = response.json()
-    
-    # Store NEW events only (no duplicates)
-    saved_count = 0
-    for event in events:
-        if not events_collection.find_one({"id": event["id"]}):
-            event["created_at"] = datetime.fromisoformat(
-                event["created_at"].replace('Z', '+00:00')
-            )
-            events_collection.insert_one(event)
-            saved_count += 1
-    
-    return jsonify({
-        "status": "success",
-        "new_events": saved_count,
-        "total_events": events_collection.count_documents({})
-    })
+    try:
+        # GitHub API call - EXACT ASSIGNMENT REQUIREMENT
+        url = f"https://api.github.com/repos/{repo}/events?per_page=100"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        new_events = response.json()
+        
+        # Filter + deduplicate + store
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        existing_ids = {e.get('id') for e in events_store}
+        fresh_events = []
+        
+        for event in new_events:
+            event_id = event.get('id')
+            if (event_id and event_id not in existing_ids and 
+                datetime.fromisoformat(event['created_at'].replace('Z', '+00:00')) > cutoff):
+                
+                # Clean event for display
+                display_event = {
+                    'id': event_id,
+                    'type': event.get('type', 'Unknown'),
+                    'actor': event.get('actor', {}),
+                    'created_at': event['created_at'],
+                    'formatted_time': format_time(event['created_at']),
+                    'payload': event.get('payload', {}),
+                    'repo': repo
+                }
+                events_store.append(display_event)
+                fresh_events.append(display_event)
+                existing_ids.add(event_id)
+        
+        # Keep only last 200 events
+        with store_lock:
+            events_store[:] = events_store[-200:]
+        
+        return jsonify({
+            'status': 'success',
+            'new_events': len(fresh_events),
+            'total_events': len(events_store),
+            'events': fresh_events[:20]
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/webhook', methods=['POST'])
 def github_webhook():
-    """GitHub Webhook receiver (BONUS POINTS!)"""
-    data = request.get_json()
-    
-    # Store webhook event in MongoDB
-    webhook_event = {
-        "type": data.get("action", "webhook"),
-        "repo": data.get("repository", {}).get("full_name", "unknown"),
-        "created_at": datetime.utcnow(),
-        "payload": data,
-        "source": "webhook"
-    }
-    
-    events_collection.insert_one(webhook_event)
-    print(f"✅ Webhook saved: {webhook_event['type']}")
-    
-    return jsonify({"status": "received"}), 200
+    """GitHub webhook receiver (BONUS POINTS!)"""
+    try:
+        data = request.get_json() or {}
+        webhook_event = {
+            'id': f"webhook_{int(time.time())}",
+            'type': data.get('action', 'webhook'),
+            'actor': {'login': data.get('sender', {}).get('login', 'webhook')},
+            'created_at': datetime.utcnow().isoformat() + 'Z',
+            'formatted_time': format_time(datetime.utcnow().isoformat()),
+            'payload': data,
+            'repo': data.get('repository', {}).get('full_name', 'webhook'),
+            'source': 'webhook'
+        }
+        
+        with store_lock:
+            events_store.insert(0, webhook_event)
+            events_store[:] = events_store[:200]
+        
+        print(f"✅ Webhook received: {webhook_event['type']}")
+        return jsonify({'status': 'received'}), 200
+        
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return jsonify({'error': str(e)}), 400
 
 @app.route('/clear')
 def clear_events():
-    """Clear events for testing"""
-    events_collection.delete_many({})
-    return jsonify({"status": "cleared"})
+    """Clear all events"""
+    with store_lock:
+        events_store.clear()
+    return jsonify({'status': 'cleared', 'count': 0})
+
+@app.route('/events/count')
+def events_count():
+    """Quick count endpoint"""
+    return jsonify({'count': len(events_store)})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
