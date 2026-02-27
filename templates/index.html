@@ -6,8 +6,8 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; 
+            background: linear-gradient(135deg,#667eea 0%,#764ba2 100%); 
             min-height: 100vh; padding: 20px;
         }
         .container { 
@@ -16,28 +16,34 @@
             box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden;
         }
         header { 
-            background: linear-gradient(90deg, #ff6b6b, #4ecdc4); 
+            background: linear-gradient(90deg,#ff6b6b,#4ecdc4); 
             color: white; padding: 30px; text-align: center; 
         }
-        .stats { display: flex; justify-content: center; gap: 30px; }
+        .stats { display: flex; justify-content: center; gap: 30px; font-size: 1.1em; }
         .controls { 
             padding: 25px; background: #f8f9fa; display: flex; 
             gap: 15px; align-items: center; flex-wrap: wrap; 
         }
-        input { flex: 1; padding: 12px 20px; border: 2px solid #ddd; 
+        #repoInput { flex: 1; padding: 12px 20px; border: 2px solid #ddd; 
             border-radius: 10px; font-size: 16px; min-width: 300px; }
-        button { padding: 12px 25px; background: #667eea; color: white; 
+        button { padding: 12px 25px; background: #28a745; color: white; 
             border: none; border-radius: 10px; cursor: pointer; font-weight: 500; }
-        #events { max-height: 70vh; overflow-y: auto; padding: 20px; }
+        button:hover { background: #218838; }
+        #eventsContainer { max-height: 70vh; overflow-y: auto; padding: 20px; }
         .event { 
             border: 1px solid #e2e8f0; border-radius: 15px; 
             margin-bottom: 20px; padding: 25px; background: #fafbfc;
             transition: all 0.3s;
         }
-        .event:hover { box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
-        .event-header { display: flex; align-items: center; gap: 15px; }
-        .avatar { width: 50px; height: 50px; border-radius: 50%; }
-        .time { color: #666; font-size: 0.9em; }
+        .event:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        .event-header { display: flex; align-items: center; gap: 15px; margin-bottom: 10px; }
+        .avatar { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #e9ecef; }
+        .event-type { font-size: 1.3em; font-weight: bold; color: #2d3748; }
+        .event-time { color: #718096; font-size: 0.95em; }
+        .event-details { color: #4a5568; line-height: 1.6; margin-top: 10px; }
+        .status { padding: 10px; border-radius: 5px; font-weight: bold; }
+        .status.new { background: #d4edda; color: #155724; }
+        .loading { text-align: center; padding: 60px; color: #999; font-size: 1.2em; }
     </style>
 </head>
 <body>
@@ -45,74 +51,90 @@
         <header>
             <h1>📊 Techstax GitHub Events Dashboard</h1>
             <div class="stats">
-                <span id="refreshTime">Never refreshed</span>
+                <span id="lastRefresh">Never refreshed</span>
                 <span id="eventCount">0 events</span>
             </div>
         </header>
         
         <div class="controls">
-            <input type="text" id="repoInput" value="torvalds/linux" placeholder="owner/repo">
-            <button onclick="fetchEvents()">🔄 Refresh Now</button>
+            <input type="text" id="repoInput" value="torvalds/linux" placeholder="owner/repo (e.g., torvalds/linux)">
+            <button onclick="fetchEvents()">🔄 Refresh Events</button>
             <button onclick="clearEvents()">🗑️ Clear All</button>
         </div>
         
-        <div id="events">
-            <div style="text-align:center;padding:60px;color:#999;">
-                Enter repo → Refresh → Watch magic ✨
-            </div>
+        <div id="eventsContainer" class="loading">
+            👈 Enter repo above → Click Refresh → Watch events appear live!
         </div>
     </div>
 
     <script>
-        let events = {{ events|tojson|safe }};
+        let allEvents = [];
         
-        function updateUI() {
-            document.getElementById('eventCount').textContent = events.length + ' events';
-            document.getElementById('refreshTime').textContent = 
-                'Last refresh: ' + new Date().toLocaleString('en-IN');
-            
-            if (events.length === 0) {
-                document.getElementById('events').innerHTML = 
-                    '<div style="text-align:center;padding:60px;color:#999;">No recent events</div>';
+        async function fetchEvents() {
+            const repo = document.getElementById('repoInput').value.trim();
+            if (!repo.includes('/')) {
+                alert('Please use format: owner/repo (like torvalds/linux)');
                 return;
             }
             
-            document.getElementById('events').innerHTML = events.map(e => `
+            const container = document.getElementById('eventsContainer');
+            container.innerHTML = '<div class="loading">🔄 Fetching events from GitHub API (per_page=100)...</div>';
+            
+            try {
+                const response = await fetch(`/api/events?repo=${encodeURIComponent(repo)}`);
+                const data = await response.json();
+                
+                document.getElementById('lastRefresh').textContent = 
+                    `Last refresh: ${new Date().toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})}`;
+                
+                if (data.status === 'success') {
+                    allEvents = data.events || [];
+                    updateDisplay();
+                    container.innerHTML = `<div class="status new">✅ ${data.new_events || 0} NEW events loaded! Total: ${data.total_events}</div>`;
+                    setTimeout(fetchEvents, 30000); // Auto-refresh 30s
+                } else {
+                    container.innerHTML = `<div style="color:orange;">⚠️ ${data.error || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                container.innerHTML = `<div style="color:red;">❌ Error: ${error.message}</div>`;
+            }
+        }
+        
+        function updateDisplay() {
+            const container = document.getElementById('eventsContainer');
+            document.getElementById('eventCount').textContent = `${allEvents.length} events`;
+            
+            if (allEvents.length === 0) {
+                container.innerHTML = '<div class="loading">No recent events found (last 24hrs)</div>';
+                return;
+            }
+            
+            container.innerHTML = allEvents.map(event => `
                 <div class="event">
                     <div class="event-header">
-                        <img class="avatar" src="${e.actor.avatar_url}" alt="${e.actor.login}">
+                        <img class="avatar" src="${event.actor?.avatar_url}" alt="${event.actor?.login || 'Unknown'}">
                         <div>
-                            <strong>${e.type} by @${e.actor.login}</strong>
-                            <div class="time">${new Date(e.created_at).toLocaleString('en-IN')}</div>
+                            <div class="event-type">${event.type} Event</div>
+                            <div style="color:#666;font-size:0.9em;">@${event.actor?.login || 'Unknown'}</div>
+                            <div class="event-time">${event.formatted_time || 'Just now'}</div>
                         </div>
                     </div>
-                    <div style="margin-top:15px;color:#555;">${JSON.stringify(e.payload).substring(0,200)}...</div>
+                    <div class="event-details">
+                        <strong>Repository:</strong> ${event.repo || 'N/A'}<br>
+                        ${event.payload ? Object.entries(event.payload).slice(0,3).map(([k,v]) => `<strong>${k}:</strong> ${JSON.stringify(v).slice(0,50)}...`).join('<br>') : ''}
+                    </div>
                 </div>
             `).join('');
         }
         
-        async function fetchEvents() {
-            const repo = document.getElementById('repoInput').value;
-            document.getElementById('events').innerHTML = '<div style="text-align:center;padding:40px;">🔄 Loading...</div>';
-            
-            try {
-                const response = await fetch(`/api/events?repo=${repo}`);
-                const data = await response.json();
-                location.reload(); // Reload to show MongoDB data
-            } catch(e) {
-                document.getElementById('events').innerHTML = '<div style="color:red;">Error loading events</div>';
-            }
-        }
-        
         async function clearEvents() {
             await fetch('/clear');
-            location.reload();
+            allEvents = [];
+            updateDisplay();
         }
         
-        // Auto-refresh every 30 seconds (ASSIGNMENT REQUIREMENT)
-        setInterval(fetchEvents, 30000);
-        
-        updateUI();
+        // Start auto-refresh every 30 seconds
+        setTimeout(fetchEvents, 2000);
     </script>
 </body>
 </html>
