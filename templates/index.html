@@ -40,9 +40,8 @@
         .avatar { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #e9ecef; }
         .event-type { font-size: 1.3em; font-weight: bold; color: #2d3748; }
         .event-time { color: #718096; font-size: 0.95em; }
-        .event-details { color: #4a5568; line-height: 1.6; margin-top: 10px; }
-        .status { padding: 10px; border-radius: 5px; font-weight: bold; }
-        .status.new { background: #d4edda; color: #155724; }
+        .status { padding: 15px; border-radius: 10px; text-align: center; font-weight: bold; margin: 20px; }
+        .status.success { background: #d4edda; color: #155724; }
         .loading { text-align: center; padding: 60px; color: #999; font-size: 1.2em; }
     </style>
 </head>
@@ -57,84 +56,106 @@
         </header>
         
         <div class="controls">
-            <input type="text" id="repoInput" value="torvalds/linux" placeholder="owner/repo (e.g., torvalds/linux)">
-            <button onclick="fetchEvents()">🔄 Refresh Events</button>
-            <button onclick="clearEvents()">🗑️ Clear All</button>
+            <input type="text" id="repoInput" value="octocat/Hello-World" placeholder="owner/repo">
+            <button onclick="fetchEvents()">🔄 Refresh Events (30s auto)</button>
+            <button onclick="clearEvents()">🗑️ Clear Events</button>
         </div>
         
         <div id="eventsContainer" class="loading">
-            👈 Enter repo above → Click Refresh → Watch events appear live!
+            Enter repo → Refresh → See 27+ live GitHub events appear!
         </div>
     </div>
 
     <script>
         let allEvents = [];
         
+        // FETCH EVENTS FROM YOUR WORKING BACKEND
         async function fetchEvents() {
             const repo = document.getElementById('repoInput').value.trim();
             if (!repo.includes('/')) {
-                alert('Please use format: owner/repo (like torvalds/linux)');
+                alert('Format: owner/repo (e.g., octocat/Hello-World)');
                 return;
             }
             
             const container = document.getElementById('eventsContainer');
-            container.innerHTML = '<div class="loading">🔄 Fetching events from GitHub API (per_page=100)...</div>';
+            container.innerHTML = '<div class="loading">🔄 Loading GitHub events (per_page=100)...<br>Sending request to your Flask backend...</div>';
             
             try {
                 const response = await fetch(`/api/events?repo=${encodeURIComponent(repo)}`);
                 const data = await response.json();
                 
+                // UPDATE STATUS
                 document.getElementById('lastRefresh').textContent = 
                     `Last refresh: ${new Date().toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})}`;
+                document.getElementById('eventCount').textContent = `${data.total_events || 0} events`;
                 
                 if (data.status === 'success') {
-                    allEvents = data.events || [];
-                    updateDisplay();
-                    container.innerHTML = `<div class="status new">✅ ${data.new_events || 0} NEW events loaded! Total: ${data.total_events}</div>`;
-                    setTimeout(fetchEvents, 30000); // Auto-refresh 30s
+                    // SHOW SUCCESS MESSAGE FIRST
+                    container.innerHTML = `
+                        <div class="status success">
+                            ✅ ${data.new_events || 0} NEW events loaded from GitHub API! 
+                            Total: ${data.total_events || 0} events stored
+                        </div>
+                    `;
+                    
+                    // GET FULL EVENTS LIST
+                    if (data.sample_events && data.sample_events.length > 0) {
+                        allEvents = data.sample_events;
+                        setTimeout(displayEvents, 1000); // Show events after success message
+                    } else {
+                        container.innerHTML += '<div class="loading">No recent events in last 24hrs</div>';
+                    }
+                    
+                    // AUTO-REFRESH EVERY 30 SECONDS
+                    setTimeout(fetchEvents, 30000);
                 } else {
-                    container.innerHTML = `<div style="color:orange;">⚠️ ${data.error || 'Unknown error'}</div>`;
+                    container.innerHTML = `<div style="color:orange;">⚠️ ${data.error || 'No events'}</div>`;
                 }
             } catch (error) {
                 container.innerHTML = `<div style="color:red;">❌ Error: ${error.message}</div>`;
             }
         }
         
-        function updateDisplay() {
+        // DISPLAY EVENTS VISUALLY
+        function displayEvents() {
             const container = document.getElementById('eventsContainer');
-            document.getElementById('eventCount').textContent = `${allEvents.length} events`;
-            
             if (allEvents.length === 0) {
-                container.innerHTML = '<div class="loading">No recent events found (last 24hrs)</div>';
+                container.innerHTML = '<div class="loading">No events to display (all filtered by 24hr window)</div>';
                 return;
             }
             
             container.innerHTML = allEvents.map(event => `
                 <div class="event">
                     <div class="event-header">
-                        <img class="avatar" src="${event.actor?.avatar_url}" alt="${event.actor?.login || 'Unknown'}">
+                        <img class="avatar" src="${event.actor?.avatar_url || 'https://via.placeholder.com/50?text=👤'}" 
+                             alt="${event.actor?.login || 'Unknown'}">
                         <div>
-                            <div class="event-type">${event.type} Event</div>
+                            <div class="event-type">${event.type || 'Event'}</div>
                             <div style="color:#666;font-size:0.9em;">@${event.actor?.login || 'Unknown'}</div>
-                            <div class="event-time">${event.formatted_time || 'Just now'}</div>
+                            <div class="event-time">${event.formatted_time || 'Loading...'}</div>
                         </div>
                     </div>
-                    <div class="event-details">
-                        <strong>Repository:</strong> ${event.repo || 'N/A'}<br>
-                        ${event.payload ? Object.entries(event.payload).slice(0,3).map(([k,v]) => `<strong>${k}:</strong> ${JSON.stringify(v).slice(0,50)}...`).join('<br>') : ''}
+                    <div style="margin-top:15px;color:#555;">
+                        <strong>📂 Repository:</strong> ${event.repo || 'N/A'}<br>
+                        <strong>📊 Source:</strong> ${event.source || 'API'}
                     </div>
                 </div>
-            `).join('');
+            `).join('') + `
+                <div style="text-align:center;padding:20px;color:#666;font-size:0.9em;">
+                    Auto-refreshing every 30 seconds... | Total events stored: ${allEvents.length}
+                </div>
+            `;
         }
         
         async function clearEvents() {
-            await fetch('/clear');
+            const response = await fetch('/clear');
             allEvents = [];
-            updateDisplay();
+            document.getElementById('eventsContainer').innerHTML = '<div class="loading">Events cleared!</div>';
+            document.getElementById('eventCount').textContent = '0 events';
         }
         
-        // Start auto-refresh every 30 seconds
-        setTimeout(fetchEvents, 2000);
+        // START AUTOMATICALLY
+        window.onload = () => setTimeout(fetchEvents, 1000);
     </script>
 </body>
 </html>
